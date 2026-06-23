@@ -41,6 +41,9 @@ async def create_tables() -> None:
     async with engine.begin() as conn:
         if settings.DATABASE_URL.startswith("postgresql"):
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis CASCADE;"))
+            await conn.execute(text(
+                "ALTER TABLE missions ADD COLUMN IF NOT EXISTS package_description TEXT;"
+            ))
         await conn.run_sync(Base.metadata.create_all)
 
 

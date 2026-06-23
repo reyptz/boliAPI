@@ -16,17 +16,21 @@ from app.application.use_cases.update_ride_status import UpdateRideStatusUseCase
 from app.presentation.dependencies import RideRepo, CurrentUserId, get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+
 ride_router = APIRouter(prefix="/rides", tags=["Rides"])
 
 # Injection (Global instances)
-redis_geo_repo = RedisGeoRepository(redis_url="redis://127.0.0.1:6379")
-rabbitmq_service = RabbitMQService(amqp_url="amqp://boli_user:boli_password@127.0.0.1:5672/")
+redis_geo_repo = RedisGeoRepository(redis_url=settings.REDIS_URL)
+rabbitmq_service = RabbitMQService(amqp_url=settings.RABBITMQ_URL)
 mobile_money_service = MobileMoneyService(api_base_url="mock://mobilemoney", api_key="test_key")
 
 class RequestRidePayload(BaseModel):
     client_id: str
     pickup: Location
     dropoff: Location
+    type: str = "vtc"
+    package_description: Optional[str] = None
 
 class AcceptRidePayload(BaseModel):
     driver_id: str
@@ -45,9 +49,10 @@ class SyncMissionPayload(BaseModel):
     client_id: str
     driver_id: Optional[str] = None
     merchant_id: Optional[str] = None
-    type: str  # 'vtc', 'food', 'delivery'
+    type: str  # 'vtc', 'food', 'delivery', 'package'
     status: str
     price: float
+    package_description: Optional[str] = None
     pickup_lat: Optional[float] = None
     pickup_lng: Optional[float] = None
     dropoff_lat: Optional[float] = None
@@ -57,9 +62,27 @@ class SyncMissionPayload(BaseModel):
 async def request_ride(payload: RequestRidePayload, ride_repo: RideRepo):
     use_case = RequestRideUseCase(ride_repo, redis_geo_repo, ws_manager)
     try:
-        mission = await use_case.execute(payload.client_id, payload.pickup, payload.dropoff)
-        return {"status": "success", "mission": mission}
+        mission = await use_case.execute(payload.client_id, payload.pickup, payload.dropoff, payload.type, payload.package_description)
+        return {
+            "status": "success",
+            "mission": {
+                "id": str(mission.id),
+                "client_id": mission.client_id,
+                "driver_id": mission.driver_id,
+                "type": mission.type,
+                "status": mission.status.value,
+                "pickup": {"latitude": mission.pickup.latitude, "longitude": mission.pickup.longitude},
+                "dropoff": {"latitude": mission.dropoff.latitude, "longitude": mission.dropoff.longitude},
+                "price": mission.price,
+                "package_description": mission.package_description,
+                "created_at": mission.created_at.isoformat() if mission.created_at else None,
+                "updated_at": mission.updated_at.isoformat() if mission.updated_at else None,
+            }
+        }
     except Exception as e:
+        import traceback
+        print(f"[/rides/request ERROR] {type(e).__name__}: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
 @ride_router.post("/{ride_id}/accept")
@@ -148,6 +171,7 @@ async def sync_mission(payload: SyncMissionPayload, db: AsyncSession = Depends(g
             merchant_id=db_merchant_id,
             type=payload.type,
             status=payload.status,
+            package_description=payload.package_description,
             pickup_location=f"SRID=4326;POINT({lng_p} {lat_p})",
             dropoff_location=f"SRID=4326;POINT({lng_d} {lat_d})",
             price_total=payload.price
@@ -160,6 +184,8 @@ async def sync_mission(payload: SyncMissionPayload, db: AsyncSession = Depends(g
         if payload.driver_id:
             model.driver_id = payload.driver_id
         model.merchant_id = db_merchant_id
+        if payload.package_description is not None:
+            model.package_description = payload.package_description
 
     # 2. Gestion des paiements automatiques lors de la finalisation
     wallet_repo = SQLAlchemyWalletRepository(db)
@@ -193,6 +219,22 @@ async def sync_mission(payload: SyncMissionPayload, db: AsyncSession = Depends(g
                 description=f"Gain livraison {payload.ride_id[:8].upper()}"
             )
 
+    # Si envoi de colis terminé
+    elif payload.status == "completed" and payload.type == "package":
+        await wallet_repo.update_balance(
+            user_id=model.client_id,
+            amount=-payload.price,
+            tx_type="payment",
+            description=f"Paiement envoi colis {payload.ride_id[:8].upper()}"
+        )
+        if model.driver_id:
+            await wallet_repo.update_balance(
+                user_id=model.driver_id,
+                amount=payload.price,
+                tx_type="earning",
+                description=f"Gain livraison colis {payload.ride_id[:8].upper()}"
+            )
+
     await db.commit()
     return {"status": "success", "ride_id": model.id, "mission_status": model.status}
 
@@ -218,10 +260,15 @@ async def get_ride_history(user_id: CurrentUserId, db: AsyncSession = Depends(ge
         d_shape = to_shape(m.dropoff_location)
         out.append({
             "id": m.id,
+            "client_id": m.client_id,
+            "driver_id": m.driver_id,
+            "merchant_id": m.merchant_id,
             "type": m.type,
             "status": m.status,
+            "package_description": m.package_description,
             "price": float(m.price_total),
             "created_at": m.created_at.isoformat() if m.created_at else None,
+            "updated_at": m.updated_at.isoformat() if m.updated_at else None,
             "pickup": {"lat": p_shape.y, "lng": p_shape.x},
             "dropoff": {"lat": d_shape.y, "lng": d_shape.x}
         })

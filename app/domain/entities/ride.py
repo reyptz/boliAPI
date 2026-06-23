@@ -20,9 +20,11 @@ class RideMission(BaseModel):
     id: uuid.UUID
     client_id: str
     driver_id: Optional[str] = None
+    type: str = "vtc"
     status: MissionStatus
     pickup: Location
     dropoff: Location
     price: float
+    package_description: Optional[str] = None
     created_at: datetime
     updated_at: datetime

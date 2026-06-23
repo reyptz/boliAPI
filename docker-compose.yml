@@ -1,37 +1,70 @@
 version: '3.8'
 
 services:
+  api:
+    build: .
+    container_name: boli_api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://boli_user:${POSTGRES_PASSWORD:-boli_password}@postgres:5432/boli_db
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-use-openssl-rand-hex-32}
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: 7
+      APP_NAME: BoliAPI
+      APP_VERSION: "1.0.0"
+      DEBUG: "false"
+      FIREBASE_CREDENTIALS_PATH: ${FIREBASE_CREDENTIALS_PATH:-}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
+      SYNC_ENABLED: ${SYNC_ENABLED:-false}
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://boli_user:${RABBITMQ_PASSWORD:-boli_password}@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    restart: unless-stopped
+
   postgres:
-    image: postgis/postgis:latest
+    image: postgis/postgis:16-3.4
     container_name: boli_postgres
     environment:
       POSTGRES_USER: boli_user
-      POSTGRES_PASSWORD: boli_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-boli_password}
       POSTGRES_DB: boli_db
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U boli_user -d boli_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
-    image: redis:latest
+    image: redis:7-alpine
     container_name: boli_redis
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
 
   rabbitmq:
-    image: rabbitmq:latest
+    image: rabbitmq:3-management-alpine
     container_name: boli_rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: boli_user
-      RABBITMQ_DEFAULT_PASS: boli_password
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-boli_password}
     ports:
-      - "5672:5672"   # Port principal RabbitMQ
-      - "15672:15672" # Interface d'administration Web
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     restart: unless-stopped
@@ -40,5 +73,3 @@ volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
-
-

@@ -4,10 +4,13 @@ import aio_pika
 import httpx
 from uuid import uuid4
 
-async def start_rabbitmq_worker(amqp_url: str = "amqp://boli_user:boli_password@127.0.0.1:5672/"):
+from app.config import settings
+
+async def start_rabbitmq_worker(amqp_url: str | None = None):
     """
     Worker d'écoute RabbitMQ qui consomme les demandes de paiement et déclenche l'API Mobile Money.
     """
+    amqp_url = amqp_url or settings.RABBITMQ_URL
     try:
         connection = await aio_pika.connect_robust(amqp_url)
         channel = await connection.channel()

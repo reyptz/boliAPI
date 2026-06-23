@@ -22,10 +22,10 @@ class AcceptRideUseCase:
         if mission.status != MissionStatus.pending:
             raise Exception(f"La course ne peut plus être acceptée. Statut actuel: {mission.status.value}")
 
-        # 2. Mise à jour du statut (Statut: accepted)
+        # 2. Mise à jour du statut (Statut: going_to_pickup — cohérent avec le frontend)
         updated_mission = await self.ride_repo.update_status(
             ride_id=ride_id, 
-            status=MissionStatus.accepted.value, 
+            status="going_to_pickup", 
             driver_id=driver_id
         )
 

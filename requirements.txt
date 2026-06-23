@@ -13,6 +13,7 @@ asyncpg>=0.29.0
 redis>=5.0.0
 GeoAlchemy2>=0.20.0
 shapely>=2.0.0
+firebase-admin>=6.5.0
 aio-pika>=9.0.0
 slowapi>=0.1.9
 prometheus-fastapi-instrumentator>=7.0.0

@@ -27,18 +27,23 @@ async def get_balance(user_id: CurrentUserId, repo: WalletRepo):
 
 @wallet_router.post("/deposit")
 async def deposit(payload: DepositRequest, user_id: CurrentUserId, repo: WalletRepo):
-    if payload.amount <= 0:
-        raise HTTPException(status_code=400, detail="Le montant doit être supérieur à 0.")
-    # Simuler un dépôt Mobile Money réussi
+    if payload.amount == 0:
+        raise HTTPException(status_code=400, detail="Le montant ne peut pas être 0.")
+    # Simuler un dépôt Mobile Money réussi ou un paiement (montant négatif)
+    tx_type = "payment" if payload.amount < 0 else "deposit"
+    description = "Paiement commande" if payload.amount < 0 else "Recharge Mobile Money"
     wallet = await repo.update_balance(
         user_id, 
         payload.amount, 
-        tx_type="deposit", 
-        description="Recharge Mobile Money"
+        tx_type=tx_type, 
+        description=description
     )
+    
+    verb = "Paiement" if payload.amount < 0 else "Dépôt"
+    abs_amount = abs(payload.amount)
     return {
         "status": "success",
-        "message": f"Dépôt de {payload.amount} XOF effectué avec succès !",
+        "message": f"{verb} de {abs_amount} XOF effectué avec succès !",
         "balance": wallet.balance
     }
 

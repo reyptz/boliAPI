@@ -25,6 +25,7 @@ from app.presentation.routers import auth_router, user_router
 
 import asyncio
 from app.infrastructure.rides.rabbitmq_worker import start_rabbitmq_worker
+from app.infrastructure.sync.scheduler import start_sync_loop
 
 # ── Configuration du Logging ─────────────────────────────────
 logging.basicConfig(level=logging.INFO)
@@ -42,7 +43,10 @@ async def lifespan(app: FastAPI):
     
     # Lancer le worker RabbitMQ en tâche de fond
     asyncio.create_task(start_rabbitmq_worker())
-    
+
+    # Lancer la sync marketplace périodique (SuguJate → Postgres) en tâche de fond
+    asyncio.create_task(start_sync_loop())
+
     print(f"\n>>> {settings.APP_NAME} v{settings.APP_VERSION} started")
     print(f"    Debug mode: {settings.DEBUG}")
     print(f"    Database: {settings.DATABASE_URL}\n")
@@ -57,7 +61,7 @@ app = FastAPI(
     version=settings.APP_VERSION,
     description=(
         "API souveraine de la Super-App Boli — "
-        "VTC, Livraison & Marketplace (Bamako, Mali)."
+        "VTC, Livraison, Marketplace, Colis & Covoiturage (Mali)."
     ),
     lifespan=lifespan,
     docs_url="/docs",
@@ -71,7 +75,9 @@ app.add_middleware(SlowAPIMiddleware)
 # ── CORS ─────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restreindre en production
+    allow_origins=["*"] if settings.DEBUG else [
+        "https://boli.ml", "https://www.boli.ml", "http://localhost:3000"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -120,9 +126,13 @@ app.include_router(user_router.router, prefix="/api/v1")
 from app.presentation.routers.ride_router import ride_router, ws_router
 from app.presentation.routers.wallet_router import wallet_router
 from app.presentation.routers.merchant_router import merchant_router
+from app.presentation.routers.sync_router import sync_router
+from app.presentation.routers.carpool_router import carpool_router
 app.include_router(ride_router, prefix="/api/v1")
 app.include_router(wallet_router, prefix="/api/v1")
 app.include_router(merchant_router, prefix="/api/v1")
+app.include_router(sync_router, prefix="/api/v1")
+app.include_router(carpool_router, prefix="/api/v1")
 app.include_router(ws_router)
 
 

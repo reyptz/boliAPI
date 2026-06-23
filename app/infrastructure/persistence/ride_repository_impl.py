@@ -22,10 +22,12 @@ class SQLAlchemyRideRepository(IRideRepository):
             id=uuid.UUID(model.id),
             client_id=model.client_id,
             driver_id=model.driver_id,
+            type=model.type,
             status=MissionStatus(model.status),
             pickup=Location(latitude=pickup_shape.y, longitude=pickup_shape.x),
             dropoff=Location(latitude=dropoff_shape.y, longitude=dropoff_shape.x),
             price=float(model.price_total),
+            package_description=model.package_description,
             created_at=model.created_at,
             updated_at=model.updated_at
         )
@@ -35,16 +37,18 @@ class SQLAlchemyRideRepository(IRideRepository):
             id=str(ride.id),
             client_id=ride.client_id,
             driver_id=ride.driver_id,
-            type="vtc",
+            type=ride.type,
             status=ride.status.value,
             pickup_location=f"SRID=4326;POINT({ride.pickup.longitude} {ride.pickup.latitude})",
             dropoff_location=f"SRID=4326;POINT({ride.dropoff.longitude} {ride.dropoff.latitude})",
             price_total=ride.price,
+            package_description=ride.package_description,
             created_at=ride.created_at,
             updated_at=ride.updated_at
         )
         self.session.add(model)
         await self.session.commit()
+        await self.session.refresh(model)
         return self._to_entity(model)
 
     async def get_by_id(self, ride_id: str) -> Optional[RideMission]:
@@ -68,4 +72,5 @@ class SQLAlchemyRideRepository(IRideRepository):
         model.updated_at = datetime.now(timezone.utc)
         
         await self.session.commit()
+        await self.session.refresh(model)
         return self._to_entity(model)

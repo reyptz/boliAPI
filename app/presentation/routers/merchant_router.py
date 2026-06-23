@@ -1,134 +1,202 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from typing import List, Annotated
-from sqlalchemy import select, cast
+from typing import List, Optional, Annotated
+from sqlalchemy import select, cast, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from geoalchemy2 import Geography
-from geoalchemy2.functions import ST_DWithin
+from geoalchemy2.functions import ST_DWithin, ST_Distance
 from geoalchemy2.shape import to_shape
 
 from app.presentation.dependencies import get_db
-from app.infrastructure.persistence.models import MerchantModel, ProductModel, UserModel
+from app.infrastructure.persistence.models import MerchantModel, ProductModel
 
 merchant_router = APIRouter(prefix="/merchants", tags=["Marketplace"])
 
+VALID_CATEGORIES = {"vendeur", "restaurant", "atelier", "salon", "ferme"}
+
+
 class ProductOut(BaseModel):
     id: str
+    erp_product_id: str | None
     name: str
     description: str | None
     price: float
+    stock: int | None
     is_available: bool
+
 
 class MerchantOut(BaseModel):
     id: str
     name: str
     category: str
+    subcategory: str | None
     latitude: float
     longitude: float
     is_open: bool
+    is_published: bool
+    erp_merchant_id: str | None
+
+
+class MerchantDetailOut(MerchantOut):
+    products: List[ProductOut] = []
+
+
+class CategoryCountOut(BaseModel):
+    category: str
+    count: int
+
+
+def _merchant_to_out(m: MerchantModel) -> MerchantOut:
+    shape = to_shape(m.location)
+    return MerchantOut(
+        id=m.id,
+        name=m.name,
+        category=m.category,
+        subcategory=m.subcategory,
+        latitude=shape.y,
+        longitude=shape.x,
+        is_open=m.is_open,
+        is_published=m.is_published,
+        erp_merchant_id=m.erp_merchant_id,
+    )
+
 
 @merchant_router.get("/nearby", response_model=List[MerchantOut])
 async def get_nearby_merchants(
     latitude: float,
     longitude: float,
     radius_km: float = 5.0,
-    db: AsyncSession = Depends(get_db)
+    category: Optional[str] = Query(None, description="Filtrer par catégorie (vendeur|restaurant|atelier|salon|ferme)"),
+    is_open: Optional[bool] = Query(None, description="Filtrer par statut ouvert"),
+    db: AsyncSession = Depends(get_db),
 ):
-    """
-    Retourne les marchands à proximité en utilisant une requête spatiale PostGIS.
-    """
-    radius_meters = radius_km * 1000.0
-    stmt = select(MerchantModel).where(
-        ST_DWithin(
-            cast(MerchantModel.location, Geography),
-            cast(f"SRID=4326;POINT({longitude} {latitude})", Geography),
-            radius_meters
+    """Marchands publiés à proximité — triés par distance croissante."""
+    if category and category not in VALID_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"Catégorie invalide. Valeurs acceptées : {', '.join(VALID_CATEGORIES)}")
+
+    point_wkt = f"SRID=4326;POINT({longitude} {latitude})"
+    geo_col = cast(MerchantModel.location, Geography)
+    point_geo = cast(point_wkt, Geography)
+
+    stmt = (
+        select(MerchantModel)
+        .where(
+            MerchantModel.is_published == True,
+            ST_DWithin(geo_col, point_geo, radius_km * 1000.0),
         )
+        .order_by(ST_Distance(geo_col, point_geo))
+    )
+
+    if category:
+        stmt = stmt.where(MerchantModel.category == category)
+    if is_open is not None:
+        stmt = stmt.where(MerchantModel.is_open == is_open)
+
+    result = await db.execute(stmt)
+    return [_merchant_to_out(m) for m in result.scalars().all()]
+
+
+@merchant_router.get("/categories", response_model=List[CategoryCountOut])
+async def get_merchant_categories(db: AsyncSession = Depends(get_db)):
+    """Nombre de marchands publiés par catégorie."""
+    stmt = (
+        select(MerchantModel.category, func.count().label("count"))
+        .where(MerchantModel.is_published == True)
+        .group_by(MerchantModel.category)
+        .order_by(func.count().desc())
     )
     result = await db.execute(stmt)
-    merchants = result.scalars().all()
-    
-    out = []
-    for m in merchants:
-        shape = to_shape(m.location)
-        out.append(MerchantOut(
-            id=m.id,
-            name=m.name,
-            category=m.category,
-            latitude=shape.y,
-            longitude=shape.x,
-            is_open=m.is_open
-        ))
-    return out
+    return [CategoryCountOut(category=row.category, count=row.count) for row in result.all()]
+
+
+@merchant_router.get("", response_model=List[MerchantOut])
+async def list_merchants(
+    category: Optional[str] = Query(None),
+    is_open: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None, description="Recherche par nom (insensible à la casse)"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """Liste paginée des marchands publiés avec filtres optionnels."""
+    if category and category not in VALID_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"Catégorie invalide. Valeurs acceptées : {', '.join(VALID_CATEGORIES)}")
+
+    stmt = select(MerchantModel).where(MerchantModel.is_published == True)
+
+    if category:
+        stmt = stmt.where(MerchantModel.category == category)
+    if is_open is not None:
+        stmt = stmt.where(MerchantModel.is_open == is_open)
+    if search:
+        stmt = stmt.where(MerchantModel.name.ilike(f"%{search}%"))
+
+    stmt = stmt.order_by(MerchantModel.name).limit(limit).offset(offset)
+
+    result = await db.execute(stmt)
+    return [_merchant_to_out(m) for m in result.scalars().all()]
+
+
+@merchant_router.get("/{merchant_id}", response_model=MerchantDetailOut)
+async def get_merchant(merchant_id: str, db: AsyncSession = Depends(get_db)):
+    """Détail d'un marchand avec ses produits disponibles."""
+    m = await db.get(MerchantModel, merchant_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Marchand introuvable.")
+
+    products_stmt = (
+        select(ProductModel)
+        .where(ProductModel.merchant_id == merchant_id, ProductModel.is_available == True)
+        .order_by(ProductModel.name)
+    )
+    result = await db.execute(products_stmt)
+    products = result.scalars().all()
+
+    shape = to_shape(m.location)
+    return MerchantDetailOut(
+        id=m.id,
+        name=m.name,
+        category=m.category,
+        subcategory=m.subcategory,
+        latitude=shape.y,
+        longitude=shape.x,
+        is_open=m.is_open,
+        is_published=m.is_published,
+        erp_merchant_id=m.erp_merchant_id,
+        products=[
+            ProductOut(
+                id=p.id,
+                erp_product_id=p.erp_product_id,
+                name=p.name,
+                description=p.description,
+                price=float(p.price),
+                stock=p.stock,
+                is_available=p.is_available,
+            )
+            for p in products
+        ],
+    )
+
 
 @merchant_router.get("/{merchant_id}/products", response_model=List[ProductOut])
-async def get_merchant_products(merchant_id: str, db: AsyncSession = Depends(get_db)):
+async def get_merchant_products(
+    merchant_id: str,
+    available_only: bool = Query(True),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(ProductModel).where(ProductModel.merchant_id == merchant_id)
+    if available_only:
+        stmt = stmt.where(ProductModel.is_available == True)
     result = await db.execute(stmt)
-    products = result.scalars().all()
     return [
         ProductOut(
             id=p.id,
+            erp_product_id=p.erp_product_id,
             name=p.name,
             description=p.description,
             price=float(p.price),
-            is_available=p.is_available
-        ) for p in products
+            stock=p.stock,
+            is_available=p.is_available,
+        )
+        for p in result.scalars().all()
     ]
-
-@merchant_router.post("/seed")
-async def seed_merchants(db: AsyncSession = Depends(get_db)):
-    """
-    Seeder de test : crée des marchands et produits factices autour de Bamako.
-    """
-    # 1. Vérifier si des marchands existent déjà
-    check = await db.execute(select(MerchantModel).limit(1))
-    if check.scalar_one_or_none():
-        return {"message": "La base contient déjà des marchands. Pas de seeding nécessaire."}
-
-    try:
-        # Créer des utilisateurs associés aux marchands
-        merchants_data = [
-            {"name": "Restaurant Saveurs du Mali", "cat": "restaurant", "lat": 12.6392, "lng": -8.0029, "erp": "ERP_REST_01"},
-            {"name": "Pharmacie du Progrès", "cat": "pharmacy", "lat": 12.6450, "lng": -7.9950, "erp": "ERP_PHAR_02"},
-            {"name": "Supermarché Bamako Central", "cat": "supermarket", "lat": 12.6300, "lng": -8.0100, "erp": "ERP_SUP_03"}
-        ]
-        
-        for idx, m_data in enumerate(merchants_data):
-            user = UserModel(
-                id=f"merchant_user_id_{idx}",
-                phone=f"+2237000000{idx}",
-                email=f"merchant{idx}@boli.ml",
-                role="merchant",
-                password_hash="seeded_password"
-            )
-            db.add(user)
-            await db.flush()
-            
-            merchant = MerchantModel(
-                id=user.id,
-                erp_merchant_id=m_data["erp"],
-                name=m_data["name"],
-                category=m_data["cat"],
-                location=f"SRID=4326;POINT({m_data['lng']} {m_data['lat']})",
-                is_open=True
-            )
-            db.add(merchant)
-            await db.flush()
-            
-            # Ajouter des produits
-            if m_data["cat"] == "restaurant":
-                db.add(ProductModel(merchant_id=merchant.id, name="Plat de Thiéboudienne", price=2500, description="Riz au poisson traditionnel sénégalais."))
-                db.add(ProductModel(merchant_id=merchant.id, name="Bissap Glacé", price=500, description="Jus de fleur d'hibiscus frais."))
-            elif m_data["cat"] == "pharmacy":
-                db.add(ProductModel(merchant_id=merchant.id, name="Boîte de Paracétamol", price=1200, description="500mg - 20 comprimés."))
-                db.add(ProductModel(merchant_id=merchant.id, name="Gel Hydroalcoolique", price=1500, description="Flacon de 250ml."))
-            else:
-                db.add(ProductModel(merchant_id=merchant.id, name="Sac de Riz 5kg", price=4500, description="Riz brisé parfumé."))
-                db.add(ProductModel(merchant_id=merchant.id, name="Bouteille d'Huile 1L", price=1800, description="Huile végétale de cuisson."))
-        
-        await db.commit()
-        return {"status": "success", "message": "Marchands et produits seedés avec succès !"}
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur de seeding : {e}")

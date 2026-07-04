@@ -66,3 +66,21 @@ class MissingIdentifierError(DomainException):
 class MissingCredentialError(DomainException):
     status_code = 400
     detail = "Un mot de passe ou un code PIN est requis."
+
+
+# ── Wallet / Paiements ───────────────────────────────────────
+
+
+class InsufficientBalanceError(DomainException):
+    status_code = 402  # Payment Required
+    detail = "Solde insuffisant pour effectuer cette opération."
+
+
+class InvalidAmountError(DomainException):
+    status_code = 400
+    detail = "Montant invalide."
+
+
+class WebhookSignatureError(DomainException):
+    status_code = 401
+    detail = "Signature du webhook invalide."

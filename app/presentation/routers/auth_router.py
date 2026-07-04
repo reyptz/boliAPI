@@ -4,6 +4,8 @@ Router d'authentification — tous les endpoints /auth/*.
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.application.dto.auth_dto import (
@@ -32,6 +34,7 @@ from app.infrastructure.security.jwt_handler import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    is_token_blacklisted,
 )
 from app.infrastructure.security.totp_handler import verify_code
 from app.presentation.dependencies import (
@@ -191,8 +194,8 @@ async def enable_2fa(payload: CurrentUserPayload, repo: UserRepo):
 )
 async def verify_2fa(
     body: Verify2FARequest,
+    repo: UserRepo,
     payload: dict = Depends(get_current_user_payload),
-    repo: UserRepo = None,
 ):
     """
     Vérifie un code TOTP.
@@ -222,10 +225,6 @@ async def disable_2fa(
     repo: UserRepo,
 ):
     """Désactive le 2FA après vérification du code actuel."""
-    import uuid
-
-    from app.domain.exceptions import Invalid2FACodeError, TwoFANotEnabledError, UserNotFoundError
-
     user = await repo.get_by_id(uuid.UUID(payload["sub"]))
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
@@ -253,7 +252,7 @@ async def refresh_token(body: RefreshTokenRequest, repo: UserRepo):
     """Échange un refresh token contre un nouveau couple access + refresh."""
     payload = decode_token(body.refresh_token)
 
-    if not payload or payload.get("type") != "refresh":
+    if not payload or payload.get("type") != "refresh" or await is_token_blacklisted(body.refresh_token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token invalide ou expiré.",
@@ -262,8 +261,6 @@ async def refresh_token(body: RefreshTokenRequest, repo: UserRepo):
     user_id = payload["sub"]
 
     # Vérifier que l'utilisateur existe encore
-    import uuid
-
     user = await repo.get_by_id(uuid.UUID(user_id))
     if not user or not user.is_active:
         raise HTTPException(

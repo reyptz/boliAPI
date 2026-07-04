@@ -27,10 +27,25 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     RABBITMQ_URL: str = "amqp://boli_user:boli_password@localhost:5672/"
 
+    # ── Mobile Money (paiements) ────────────────────────────
+    MOBILE_MONEY_API_URL: str = "mock://mobilemoney"
+    MOBILE_MONEY_API_KEY: str = "test_key"
+    # Secret partagé pour vérifier la signature HMAC des webhooks de paiement.
+    PAYMENT_WEBHOOK_SECRET: str = ""
+
     # ── Application ─────────────────────────────────────────
     APP_NAME: str = "BoliAPI"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
+
+    # ── CORS ────────────────────────────────────────────────
+    # Liste blanche d'origines autorisées (séparées par des virgules).
+    CORS_ORIGINS: str = "https://boli.ml,https://www.boli.ml,http://localhost:3000"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Origines CORS autorisées, sous forme de liste nettoyée."""
+        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
     # ── Intégration SuguJate / Firebase (sync marketplace) ──
     # Chemin du service-account JSON Firebase Admin (hors-git).

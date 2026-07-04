@@ -32,7 +32,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("boli-api")
 
 # ── Initialisation du Limiter (Rate Limiting) ────────────────
-limiter = Limiter(key_func=get_remote_address, default_limits=["60 per minute"])
+# Backend Redis pour partager les compteurs entre workers/instances
+# (sinon chaque worker a son propre compteur, contournable en round-robin).
+# Fallback en mémoire si Redis est injoignable, pour ne jamais bloquer l'API.
+def _rate_limit_storage_uri() -> str:
+    try:
+        import redis as _sync_redis
+
+        client = _sync_redis.from_url(settings.REDIS_URL, socket_connect_timeout=1)
+        client.ping()
+        client.close()
+        return settings.REDIS_URL
+    except Exception as exc:
+        logger.warning(
+            "Redis injoignable (%s) — rate limiting en mémoire (non partagé).", exc
+        )
+        return "memory://"
+
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["60 per minute"],
+    storage_uri=_rate_limit_storage_uri(),
+)
 
 # ── Lifecycle ────────────────────────────────────────────────
 @asynccontextmanager
@@ -64,8 +86,10 @@ app = FastAPI(
         "VTC, Livraison, Marketplace, Colis & Covoiturage (Mali)."
     ),
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    # La doc interactive n'est exposée qu'en mode debug (jamais en production).
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
 
 app.state.limiter = limiter
@@ -73,14 +97,27 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 # ── CORS ─────────────────────────────────────────────────────
+# On ne combine JAMAIS `allow_origins=["*"]` avec `allow_credentials=True`
+# (interdit par la spec CORS et dangereux). La liste blanche est configurable
+# via la variable d'environnement CORS_ORIGINS (séparée par des virgules).
+#
+# En DEBUG uniquement, on autorise en plus tout `localhost`/`127.0.0.1` sur un
+# port quelconque ainsi que `10.0.2.2` (alias de l'hôte depuis l'émulateur
+# Android) via une regex — les ports des serveurs de dev Flutter/Expo web sont
+# choisis dynamiquement et ne peuvent pas être listés à l'avance. Starlette
+# reflète alors l'origine exacte matchée (jamais un `*`), donc la combinaison
+# avec `allow_credentials=True` reste conforme à la spec CORS.
+_dev_origin_regex = (
+    r"^https?://(localhost|127\.0\.0\.1|10\.0\.2\.2)(:\d+)?$" if settings.DEBUG else None
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.DEBUG else [
-        "https://boli.ml", "https://www.boli.ml", "http://localhost:3000"
-    ],
+    allow_origins=settings.cors_origins_list,
+    allow_origin_regex=_dev_origin_regex,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 

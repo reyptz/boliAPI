@@ -17,5 +17,5 @@ class LogoutUseCase:
         Args:
             token: Le JWT access token à invalider.
         """
-        blacklist_token(token)
+        await blacklist_token(token)
         return {"message": "Déconnexion réussie."}

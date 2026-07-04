@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_async_session
 from app.domain.enums.user_role import UserRole
 from app.infrastructure.persistence.user_repository_impl import SQLAlchemyUserRepository
-from app.infrastructure.security.jwt_handler import decode_token
+from app.infrastructure.security.jwt_handler import decode_token, is_token_blacklisted
 
 # ── Schéma de sécurité ───────────────────────────────────────
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -54,7 +54,7 @@ async def get_current_user_payload(
         )
 
     payload = decode_token(credentials.credentials)
-    if payload is None:
+    if payload is None or await is_token_blacklisted(credentials.credentials):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token invalide ou expiré.",

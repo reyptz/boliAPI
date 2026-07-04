@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime
@@ -6,7 +7,7 @@ from datetime import datetime
 class Wallet(BaseModel):
     id: str
     user_id: str
-    balance: float
+    balance: Decimal
     currency: str
     updated_at: datetime
 
@@ -20,5 +21,13 @@ class IWalletRepository(ABC):
         pass
 
     @abstractmethod
-    async def update_balance(self, user_id: str, amount: float, tx_type: str = "deposit", description: str = "Recharge Mobile Money") -> Wallet:
+    async def update_balance(
+        self,
+        user_id: str,
+        amount: Decimal | float,
+        tx_type: str = "deposit",
+        description: str = "Recharge Mobile Money",
+        *,
+        allow_negative: bool = False,
+    ) -> Wallet:
         pass
